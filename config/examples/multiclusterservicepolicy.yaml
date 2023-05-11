@@ -1,0 +1,24 @@
+apiVersion: example.com.example.com/v1alpha1
+kind: MultiClusterServicePolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: multiclusterservicepolicy
+    app.kubernetes.io/instance: multiclusterservicepolicy-sample
+    app.kubernetes.io/part-of: multicluster-service-policy-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: multicluster-service-policy-controller
+  name: multiclusterservicepolicy-sample
+  namespace: default
+spec:
+  namespaces:
+    - "*"
+  allowedExposedResources:
+    - "deployment/backend"
+    - "deployment/echo"
+  allowedServices:
+    - "backend"
+    - "echo"
+  placementRef:
+    apiGroup: cluster.open-cluster-management.io
+    kind: Placement
+    name: multiclusterservicepolicy-sample

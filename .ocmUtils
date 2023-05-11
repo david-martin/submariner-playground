@@ -1,0 +1,42 @@
+# shellcheck shell=bash
+
+ocmInitHub() {
+    hubCluster=$1
+    export CTX_HUB_CLUSTER=kind-${hubCluster}
+
+    # We are using the default Placement API, but we still need to install the PlacementRule CRD
+    # See https://open-cluster-management.io/getting-started/integration/policy-framework/#prerequisite
+    kubectl --context=${CTX_HUB_CLUSTER} apply -f https://raw.githubusercontent.com/open-cluster-management-io/multicloud-operators-subscription/main/deploy/hub-common/apps.open-cluster-management.io_placementrules_crd.yaml
+
+    ${CLUSTERADM_BIN} --context=${CTX_HUB_CLUSTER} init --wait
+    kubectl --context=${CTX_HUB_CLUSTER} -n open-cluster-management-hub wait --timeout=300s --for=condition=Available deployments --all
+
+    # Deploy the policy framework hub controllers
+    ${CLUSTERADM_BIN} --context ${CTX_HUB_CLUSTER} install hub-addon --names governance-policy-framework
+
+}
+
+ocmAddCluster() {
+    hubCluster=$1
+    managedCluster=$2
+    
+    export CTX_HUB_CLUSTER=kind-${hubCluster}
+    export CTX_MANAGED_CLUSTER=kind-${managedCluster}
+    HUB_API_SERVER=$(kubectl config view -o jsonpath="{$.clusters[?(@.name == '${CTX_HUB_CLUSTER}')].cluster.server}")
+    OCM_BOOTSTRAP_TOKEN=$(${CLUSTERADM_BIN} get token --context ${CTX_HUB_CLUSTER} | awk 'BEGIN{FS="="}/token/{print $2}')
+
+    ${CLUSTERADM_BIN} --context ${CTX_MANAGED_CLUSTER} join --hub-token ${OCM_BOOTSTRAP_TOKEN} --hub-apiserver ${HUB_API_SERVER} \
+        --cluster-name ${managedCluster} --force-internal-endpoint-lookup --wait
+    ${CLUSTERADM_BIN} --context ${CTX_HUB_CLUSTER} accept --clusters ${managedCluster} --wait
+
+    if [ "$hubCluster" = "$managedCluster" ]; then
+        echo "Deploy the synchronization components to a self-managed hub cluster '${hubCluster}'"
+        ${CLUSTERADM_BIN} --context ${CTX_HUB_CLUSTER} addon enable --names governance-policy-framework --clusters ${hubCluster} --annotate addon.open-cluster-management.io/on-multicluster-hub=true
+    else
+        echo "Deploy the synchronization components to the managed cluster '${managedCluster}'"
+        ${CLUSTERADM_BIN} --context ${CTX_HUB_CLUSTER} addon enable --names governance-policy-framework --clusters ${managedCluster}
+    fi
+
+    echo "Deploy the configuration policy controller"
+    ${CLUSTERADM_BIN} --context ${CTX_HUB_CLUSTER} addon enable addon --names config-policy-controller --clusters ${managedCluster}
+}

@@ -1,0 +1,13 @@
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: multiclusterservicepolicy-sample
+  namespace: default
+spec:
+  predicates:
+  - requiredClusterSelector:
+      claimSelector: {}
+      labelSelector:
+        matchExpressions: []
+  prioritizerPolicy:
+    mode: Additive
