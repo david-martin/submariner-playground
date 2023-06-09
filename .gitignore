@@ -7,9 +7,4 @@ bin/*
 # Keep the bin directory
 !bin/.gitkeep
 
-/app1.yaml
-/app2.yaml
-/app_with_httproute1.yaml
-/app_with_httproute2.yaml
-/gateway1.yaml
-/gateway2.yaml
+/broker-info.subm*

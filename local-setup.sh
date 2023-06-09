@@ -24,33 +24,47 @@ EXAMPLES_DIR=${LOCAL_SETUP_DIR}/config/examples
 ISTIO_KUSTOMIZATION_DIR=${LOCAL_SETUP_DIR}/config/istio/istio-operator.yaml
 GATEWAY_API_KUSTOMIZATION_DIR=${LOCAL_SETUP_DIR}/config/gateway-api
 
+kind_fixup_config() {
+  local master_ip
+  TMP_KUBECONFIG=./tmp/kubeconfigs/${cluster}.kubeconfig
+  master_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${cluster}-control-plane" | head -n 1)
+  yq -i ".clusters[0].cluster.server = \"https://${master_ip}:6443\"" "${TMP_KUBECONFIG}"
+  yq -i "(.. | select(. == \"kind-${cluster}\")) = \"${cluster}\"" "${TMP_KUBECONFIG}"
+  chmod a+r "${TMP_KUBECONFIG}"
+}
+
 kindCreateCluster() {
   local cluster=$1;
   local port80=$2;
   local port443=$3;
+  local idx=$4
+  local pod_cidr="10.24${idx}.0.0/16"
+  local service_cidr="100.9${idx}.0.0/16"
+  local dns_domain="${cluster}.local"
   cat <<EOF | ${KIND} create cluster --name ${cluster} --config=-
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  podSubnet: ${pod_cidr}
+  serviceSubnet: ${service_cidr}
+kubeadmConfigPatches:
+- |
+  apiVersion: kubeadm.k8s.io/v1beta2
+  kind: ClusterConfiguration
+  metadata:
+    name: config
+  networking:
+    podSubnet: ${pod_cidr}
+    serviceSubnet: ${service_cidr}
+    dnsDomain: ${dns_domain}
 nodes:
 - role: control-plane
   image: kindest/node:v1.26.0
-  kubeadmConfigPatches:
-  - |
-    kind: InitConfiguration
-    nodeRegistration:
-      kubeletExtraArgs:
-        node-labels: "ingress-ready=true"
-  extraPortMappings:
-  - containerPort: 80
-    hostPort: ${port80}
-    protocol: TCP
-  - containerPort: 443
-    hostPort: ${port443}
-    protocol: TCP
+
 EOF
-mkdir -p ./tmp/kubeconfigs
-${KIND} get kubeconfig --name ${cluster} > ./tmp/kubeconfigs/${cluster}.kubeconfig
-${KIND} export kubeconfig --name ${cluster} --kubeconfig ./tmp/kubeconfigs/internal/${cluster}.kubeconfig --internal
+  ${KIND} get kubeconfig --name ${cluster} > ./tmp/kubeconfigs/${cluster}.kubeconfig
+  ${KIND} export kubeconfig --name ${cluster} --kubeconfig ./tmp/kubeconfigs/internal/${cluster}.kubeconfig --internal
+  kind_fixup_config
 }
 
 deployMetalLB () {
@@ -92,7 +106,8 @@ cleanClusters() {
 	if ! [[ $clusterCount =~ "0" ]] ; then
 		echo "Deleting previous kind clusters."
 		${KIND} get clusters | grep ${KIND_CLUSTER_PREFIX} | xargs ${KIND} delete clusters
-	fi	
+	fi
+  rm -rf ./tmp/kubeconfigs/*
 }
 
 
@@ -129,17 +144,27 @@ metalLBSubnetStart=200
 cleanClusters
 
 for ((i = 1; i <= 2; i++)); do
-  kindCreateCluster ${KIND_CLUSTER_PREFIX}${i} $((${port80} + ${i} - 1)) $((${port443} + ${i} - 1))
-  deployIstio ${KIND_CLUSTER_PREFIX}${i}
-  installGatewayAPI ${KIND_CLUSTER_PREFIX}${i}
-  deployMetalLB ${KIND_CLUSTER_PREFIX}${i} $((${metalLBSubnetStart} + ${i} - 1))
-  deployIngressController ${KIND_CLUSTER_PREFIX}${i}
+  export KUBECONFIG=$(pwd)/tmp/kubeconfigs/base.config
+  kindCreateCluster ${KIND_CLUSTER_PREFIX}${i} $((${port80} + ${i} - 1)) $((${port443} + ${i} - 1)) ${i}
+  # deployIstio ${KIND_CLUSTER_PREFIX}${i}
+  # installGatewayAPI ${KIND_CLUSTER_PREFIX}${i}
+  #deployMetalLB ${KIND_CLUSTER_PREFIX}${i} $((${metalLBSubnetStart} + ${i} - 1))
+  # deployIngressController ${KIND_CLUSTER_PREFIX}${i}
 
-  # OCM Hub goes on first cluster
-  if [[ "$i" -eq 1 ]]
-  then
-    ocmInitHub ${KIND_CLUSTER_PREFIX}${i}
-  fi
-  # Register all clusters, even the hub cluster, with the OCM Hub
-  ocmAddCluster ${KIND_CLUSTER_PREFIX}1 ${KIND_CLUSTER_PREFIX}${i}
+
+  # if [[ "$i" -eq 1 ]]
+  # then
+  #   # OCM Hub goes on first cluster
+  #   ocmInitHub ${KIND_CLUSTER_PREFIX}${i}
+  # else
+  #   # Register all other clusters with the OCM Hub
+  #   ocmAddCluster ${KIND_CLUSTER_PREFIX}1 ${KIND_CLUSTER_PREFIX}${i}
+  # fi
 done;
+
+# Deploy the submariner broker to cluster 1
+subctl deploy-broker --kubeconfig ./tmp/kubeconfigs/submariner-cluster-1.kubeconfig
+
+# Join cluster 1 & 2 to the broker
+subctl join --kubeconfig ./tmp/kubeconfigs/submariner-cluster-1.kubeconfig broker-info.subm --clusterid submariner-cluster-1 --natt=false --check-broker-certificate=false
+subctl join --kubeconfig ./tmp/kubeconfigs/submariner-cluster-2.kubeconfig broker-info.subm --clusterid submariner-cluster-2 --natt=false --check-broker-certificate=false
